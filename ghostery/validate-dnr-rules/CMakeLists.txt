@@ -1,17 +1,23 @@
 cmake_minimum_required(VERSION 3.20)
+
+set(WEBKIT_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../..")
+
+# Set up WebKit's CMake module path before project() so platform detection works
+set(CMAKE_MODULE_PATH "${WEBKIT_ROOT}/Source/cmake" ${CMAKE_MODULE_PATH})
+list(APPEND CMAKE_MODULE_PATH "${WEBKIT_ROOT}/Source/cmake")
+
 project(validate-dnr-rules CXX C)
 
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-set(WEBKIT_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../..")
-
-# Use WebKit's CMake infrastructure for WTF
+# WebKit build system variables
 set(WTF_DIR "${WEBKIT_ROOT}/Source/WTF")
+set(WTF_SCRIPTS_DIR "${WTF_DIR}/wtf/Scripts")
 set(JavaScriptCore_SCRIPTS_DIR "${WEBKIT_ROOT}/Source/JavaScriptCore/Scripts")
 
-# Include WebKit's top-level CMake options
-include("${WEBKIT_ROOT}/Source/cmake/WebKitCommon.cmake" OPTIONAL)
+# Include WebKit's common cmake (handles platform detection, find_package, etc.)
+include(WebKitCommon)
 
 # Build WTF as a dependency
 if (NOT TARGET WTF)

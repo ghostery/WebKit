@@ -12,6 +12,7 @@ on:
 jobs:
   build:
     strategy:
+      fail-fast: false
       matrix:
         include:
           - os: macos-latest
@@ -34,17 +35,23 @@ jobs:
         if: runner.os == 'macOS'
         run: brew install cmake ninja icu4c pkg-config
 
-      - name: Configure
+      - name: Configure (Linux)
+        if: runner.os == 'Linux'
         run: |
           cmake -B build -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
             -DPORT=GTK \
-            -DENABLE_WEBCORE=OFF \
-            -DENABLE_WEBKIT=OFF \
-            -DENABLE_TOOLS=OFF \
+            ghostery/validate-dnr-rules
+
+      - name: Configure (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          cmake -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DPORT=Mac \
             ghostery/validate-dnr-rules
         env:
-          CMAKE_PREFIX_PATH: ${{ runner.os == 'macOS' && '/opt/homebrew/opt/icu4c' || '' }}
+          CMAKE_PREFIX_PATH: /opt/homebrew/opt/icu4c
 
       - name: Build
         run: cmake --build build --target validate-dnr-rules
