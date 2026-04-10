@@ -17,12 +17,8 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: macos-latest
-            name: macos-arm64
-            port: Mac
-          - os: ubuntu-latest
+          - os: ubuntu-24.04
             name: linux-x64
-            port: GTK
     runs-on: ${{ matrix.os }}
 
     steps:
@@ -30,39 +26,52 @@ jobs:
         with:
           fetch-depth: 1
 
-      - name: Install dependencies (Linux)
-        if: runner.os == 'Linux'
+      - name: Install WebKit GTK build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y cmake ninja-build pkg-config \
-            libicu-dev libglib2.0-dev unifdef ruby
-
-      - name: Install dependencies (macOS)
-        if: runner.os == 'macOS'
-        run: brew install cmake ninja icu4c pkg-config
+          sudo sed -i '/^Types: deb$/s/$/\nTypes: deb-src/' /etc/apt/sources.list.d/ubuntu.sources || true
+          sudo apt-get update
+          sudo apt-get build-dep -y webkit2gtk-4.1 || true
+          sudo apt-get install -y cmake ninja-build libicu-dev pkg-config \
+            unifdef ruby libglib2.0-dev libcairo2-dev libharfbuzz-dev \
+            libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \
+            libsoup-3.0-dev libepoxy-dev libwpe-1.0-dev \
+            libwpebackend-fdo-1.0-dev libxslt1-dev libmanette-0.2-dev \
+            libsecret-1-dev libtasn1-6-dev libsystemd-dev \
+            libgcrypt20-dev libwebp-dev liblcms2-dev libopenjp2-7-dev \
+            libavif-dev libjxl-dev libgirepository1.0-dev gobject-introspection \
+            libdrm-dev libgbm-dev libinput-dev libudev-dev wayland-protocols \
+            libwayland-dev gtk-doc-tools libgtk-4-dev libenchant-2-dev
 
       - name: Configure
         run: |
           cmake -B build -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
-            -DPORT=${{ matrix.port }} \
+            -DPORT=GTK \
             -DENABLE_TOOLS=OFF \
             -DENABLE_API_TESTS=OFF \
-            -DENABLE_WEBCORE=OFF \
-            -DENABLE_WEBKIT=OFF \
-            -DENABLE_CONTENT_EXTENSIONS=ON \
             .
-        env:
-          CMAKE_PREFIX_PATH: ${{ runner.os == 'macOS' && '/opt/homebrew/opt/icu4c' || '' }}
 
-      - name: Build
+      - name: Build validate-dnr-rules
         run: cmake --build build --target validate-dnr-rules
 
       - name: Test
         run: |
-          echo '[{"id":1,"priority":1,"action":{"type":"block"},"condition":{"regexFilter":"ad[0-9]{2}\\.js"}}]' > /tmp/test-rules.json
-          echo '[{"id":2,"priority":1,"action":{"type":"block"},"condition":{"regexFilter":"(?:ads|tracking)\\.com"}}]' >> /tmp/test-rules.json
+          cat > /tmp/test-rules.json << 'RULES'
+          [
+            {"id":1,"priority":1,"action":{"type":"block"},"condition":{"regexFilter":"ad[0-9]{2}\\.js"}},
+            {"id":2,"priority":1,"action":{"type":"block"},"condition":{"regexFilter":"(?:ads|tracking)\\.com"}},
+            {"id":3,"priority":1,"action":{"type":"block"},"condition":{"regexFilter":"tracker\\d+\\.js"}},
+            {"id":4,"priority":1,"action":{"type":"block"},"condition":{"regexFilter":"pixel\\b"}}
+          ]
+          RULES
           ./build/validate-dnr-rules /tmp/test-rules.json
+
+      - name: Binary info
+        run: |
+          file build/validate-dnr-rules
+          du -h build/validate-dnr-rules
+          ldd build/validate-dnr-rules || true
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
