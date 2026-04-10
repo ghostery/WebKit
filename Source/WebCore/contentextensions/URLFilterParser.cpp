@@ -120,8 +120,35 @@ public:
             m_floatingTerm.quantify(AtomQuantifier::ZeroOrMore);
         else if (minimum == 1 && maximum == JSC::Yarr::quantifyInfinite)
             m_floatingTerm.quantify(AtomQuantifier::OneOrMore);
+        else if (minimum > 0 || maximum > 1)
+            expandQuantifier(minimum, maximum);
         else
             fail(URLFilterParser::InvalidQuantifier);
+    }
+
+    void expandQuantifier(unsigned minimum, unsigned maximum)
+    {
+        Term baseTerm = m_floatingTerm;
+        m_floatingTerm = Term();
+
+        Term group(Term::GroupTerm);
+
+        for (unsigned i = 0; i < minimum; ++i)
+            group.extendGroupSubpattern(baseTerm);
+
+        if (maximum == JSC::Yarr::quantifyInfinite) {
+            Term oneOrMore(baseTerm);
+            oneOrMore.quantify(AtomQuantifier::OneOrMore);
+            group.extendGroupSubpattern(oneOrMore);
+        } else {
+            for (unsigned i = minimum; i < maximum; ++i) {
+                Term optional(baseTerm);
+                optional.quantify(AtomQuantifier::ZeroOrOne);
+                group.extendGroupSubpattern(optional);
+            }
+        }
+
+        m_floatingTerm = group;
     }
 
     void NODELETE atomBackReference(unsigned)
