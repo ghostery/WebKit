@@ -34,6 +34,10 @@ target_compile_definitions(validate-dnr-rules PRIVATE
 target_include_directories(validate-dnr-rules PRIVATE
     ${TOOL_DIR}/src
     ${CE_DIR}
+    ${WTF_DIR}
+    ${WTF_DIR}/wtf
+    ${CMAKE_BINARY_DIR}
+    ${WTF_DERIVED_SOURCES_DIR}
 )
 
 # Create include bridge so <WebCore/...> and <JavaScriptCore/...> resolve
