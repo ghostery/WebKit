@@ -26,22 +26,11 @@ jobs:
         with:
           fetch-depth: 1
 
-      - name: Install build dependencies
+      - name: Install dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            cmake ninja-build pkg-config unifdef ruby \
-            libicu-dev libglib2.0-dev libcairo2-dev libharfbuzz-dev \
-            libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \
-            libgstreamer-plugins-bad1.0-dev \
-            libsoup-3.0-dev libepoxy-dev \
-            libxslt1-dev libmanette-0.2-dev \
-            libsecret-1-dev libtasn1-6-dev libsystemd-dev \
-            libgcrypt20-dev libwebp-dev liblcms2-dev libopenjp2-7-dev \
-            libavif-dev libjxl-dev libgirepository1.0-dev gobject-introspection \
-            libdrm-dev libgbm-dev libinput-dev libudev-dev wayland-protocols \
-            libwayland-dev libgtk-4-dev libenchant-2-dev \
-            libatspi2.0-dev gi-docgen
+            cmake ninja-build pkg-config ruby unifdef libicu-dev
 
       - name: Cache CMake build
         uses: actions/cache@v4
@@ -55,19 +44,10 @@ jobs:
         run: |
           cmake -B build -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
-            -DPORT=GTK \
-            -DENABLE_TOOLS=OFF \
-            -DENABLE_API_TESTS=OFF \
-            -DENABLE_SPEECH_SYNTHESIS=OFF \
-            -DENABLE_DOCUMENTATION=OFF \
-            -DENABLE_GAMEPAD=OFF \
-            -DENABLE_BUBBLEWRAP_SANDBOX=OFF \
-            -DENABLE_JOURNALD_LOG=OFF \
-            -DUSE_AVIF=OFF \
-            -DUSE_JPEGXL=OFF \
+            -DPORT=JSCOnly \
             .
 
-      - name: Build validate-dnr-rules
+      - name: Build
         run: cmake --build build --target validate-dnr-rules
 
       - name: Test
