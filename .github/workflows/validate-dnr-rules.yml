@@ -58,6 +58,13 @@ jobs:
             -DPORT=GTK \
             -DENABLE_TOOLS=OFF \
             -DENABLE_API_TESTS=OFF \
+            -DENABLE_SPEECH_SYNTHESIS=OFF \
+            -DENABLE_DOCUMENTATION=OFF \
+            -DENABLE_GAMEPAD=OFF \
+            -DENABLE_BUBBLEWRAP_SANDBOX=OFF \
+            -DENABLE_JOURNALD_LOG=OFF \
+            -DUSE_AVIF=OFF \
+            -DUSE_JPEGXL=OFF \
             .
 
       - name: Build validate-dnr-rules
