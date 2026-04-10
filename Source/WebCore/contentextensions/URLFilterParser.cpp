@@ -51,7 +51,13 @@ public:
         if (hasError())
             return;
 
-        sinkFloatingTermIfNecessary();
+        if (m_hasTopLevelDisjunction) {
+            sinkFloatingTermIfNecessary();
+            m_floatingTerm = m_openGroups.takeLast();
+            sinkFloatingTermIfNecessary();
+            m_hasTopLevelDisjunction = false;
+        } else
+            sinkFloatingTermIfNecessary();
 
         simplifySunkTerms();
 
@@ -145,7 +151,10 @@ public:
 
         ASSERT(m_floatingTerm.isValid());
 
-        if (!minimum && maximum == 1)
+        if (!minimum && !maximum) {
+            // {0} means match zero times — discard the term.
+            m_floatingTerm = Term();
+        } else if (!minimum && maximum == 1)
             m_floatingTerm.quantify(AtomQuantifier::ZeroOrOne);
         else if (!minimum && maximum == JSC::Yarr::quantifyInfinite)
             m_floatingTerm.quantify(AtomQuantifier::ZeroOrMore);
@@ -376,17 +385,24 @@ public:
         m_floatingTerm = m_openGroups.takeLast();
     }
 
-    void NODELETE disjunction(JSC::Yarr::CreateDisjunctionPurpose)
+    void disjunction(JSC::Yarr::CreateDisjunctionPurpose)
     {
         if (hasError())
             return;
 
         if (m_openGroups.isEmpty()) {
-            fail(URLFilterParser::Disjunction);
-            return;
-        }
+            sinkFloatingTermIfNecessary();
 
-        sinkFloatingTermIfNecessary();
+            Term implicitGroup(Term::GroupTerm);
+            for (const auto& term : m_sunkTerms)
+                implicitGroup.extendGroupSubpattern(term);
+            m_sunkTerms.clear();
+
+            m_openGroups.append(WTF::move(implicitGroup));
+            m_hasTopLevelDisjunction = true;
+        } else
+            sinkFloatingTermIfNecessary();
+
         m_openGroups.last().startNewAlternative();
     }
 
@@ -487,6 +503,7 @@ private:
     Term m_floatingTerm;
     bool m_hasBeginningOfLineAssertion { false };
     bool m_hasProcessedEndOfLineAssertion { false };
+    bool m_hasTopLevelDisjunction { false };
 
     URLFilterParser::ParseStatus m_parseStatus;
 };

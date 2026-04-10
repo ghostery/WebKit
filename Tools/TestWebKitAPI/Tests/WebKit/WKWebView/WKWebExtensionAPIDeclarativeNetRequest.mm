@@ -4055,16 +4055,15 @@ static NSData *ghosteryRulesetData(NSString *jsonFilename)
     return data;
 }
 
-// MARK: - Bug: regexFilter rejects valid quantifiers like {2}, {2,3}, {4,}
-// These are standard regular language features supported by Chrome and Firefox DNR.
-// WebKit's URLFilterParser does not implement bounded repetition.
+// MARK: - regexFilter: bounded quantifiers {n}, {n,m}, {n,}, {0}
 
 TEST(WKWebExtensionAPIDeclarativeNetRequest, RegexFilterQuantifiers)
 {
     auto *rules = @"["
         "{ \"id\": 1, \"priority\": 1, \"action\": { \"type\": \"block\" }, \"condition\": { \"regexFilter\": \"ad[0-9]{2}\\\\.js\" } },"
         "{ \"id\": 2, \"priority\": 1, \"action\": { \"type\": \"block\" }, \"condition\": { \"regexFilter\": \"tracker-[a-z]{3,8}\\\\.com\" } },"
-        "{ \"id\": 3, \"priority\": 1, \"action\": { \"type\": \"block\" }, \"condition\": { \"regexFilter\": \"pixel-[0-9]{1,}\\\\.gif\" } }"
+        "{ \"id\": 3, \"priority\": 1, \"action\": { \"type\": \"block\" }, \"condition\": { \"regexFilter\": \"pixel-[0-9]{1,}\\\\.gif\" } },"
+        "{ \"id\": 4, \"priority\": 1, \"action\": { \"type\": \"block\" }, \"condition\": { \"regexFilter\": \"v{0}test\" } }"
     "]";
 
     NSArray<NSString *> *errors = nil;
@@ -4072,7 +4071,23 @@ TEST(WKWebExtensionAPIDeclarativeNetRequest, RegexFilterQuantifiers)
     NSArray *converted = result[@"convertedRules"];
 
     EXPECT_EQ(errors.count, 0u);
-    EXPECT_EQ([converted count], 3u);
+    EXPECT_EQ([converted count], 4u);
+}
+
+// MARK: - regexFilter: top-level alternation (?:a)|(?:b)
+
+TEST(WKWebExtensionAPIDeclarativeNetRequest, RegexFilterTopLevelAlternation)
+{
+    auto *rules = @"["
+        "{ \"id\": 1, \"priority\": 1, \"action\": { \"type\": \"block\" }, \"condition\": { \"regexFilter\": \"(?:\\\\/frontend-gtag\\\\.js)|(?:\\\\/gtag\\\\.min\\\\.js)\" } }"
+    "]";
+
+    NSArray<NSString *> *errors = nil;
+    NSDictionary *result = translateDNRRules(rules, @"test", &errors);
+    NSArray *converted = result[@"convertedRules"];
+
+    EXPECT_EQ(errors.count, 0u);
+    EXPECT_EQ([converted count], 1u);
 }
 
 TEST(WKWebExtensionAPIDeclarativeNetRequest, RegexFilterQuantifiersBlocking)
