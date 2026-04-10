@@ -101,10 +101,41 @@ public:
         sinkFloatingTermIfNecessary();
         ASSERT(!m_floatingTerm.isValid());
 
-        if (builtInCharacterClassID == JSC::Yarr::BuiltInCharacterClassID::DotClassID && !inverted)
+        if (builtInCharacterClassID == JSC::Yarr::BuiltInCharacterClassID::DotClassID && !inverted) {
             m_floatingTerm = Term(Term::UniversalTransition);
-        else
-            fail(URLFilterParser::UnsupportedCharacterClass);
+            return;
+        }
+
+        if (builtInCharacterClassID == JSC::Yarr::BuiltInCharacterClassID::DigitClassID) {
+            m_floatingTerm = Term(Term::CharacterSetTerm, inverted);
+            for (unsigned i = '0'; i <= '9'; ++i)
+                m_floatingTerm.addCharacter(static_cast<char16_t>(i), true);
+            return;
+        }
+
+        if (builtInCharacterClassID == JSC::Yarr::BuiltInCharacterClassID::WordClassID) {
+            m_floatingTerm = Term(Term::CharacterSetTerm, inverted);
+            for (unsigned i = '0'; i <= '9'; ++i)
+                m_floatingTerm.addCharacter(static_cast<char16_t>(i), true);
+            for (unsigned i = 'a'; i <= 'z'; ++i)
+                m_floatingTerm.addCharacter(static_cast<char16_t>(i), true);
+            for (unsigned i = 'A'; i <= 'Z'; ++i)
+                m_floatingTerm.addCharacter(static_cast<char16_t>(i), true);
+            m_floatingTerm.addCharacter('_', true);
+            return;
+        }
+
+        if (builtInCharacterClassID == JSC::Yarr::BuiltInCharacterClassID::SpaceClassID) {
+            m_floatingTerm = Term(Term::CharacterSetTerm, inverted);
+            m_floatingTerm.addCharacter(' ', true);
+            m_floatingTerm.addCharacter('\t', true);
+            m_floatingTerm.addCharacter('\n', true);
+            m_floatingTerm.addCharacter('\r', true);
+            m_floatingTerm.addCharacter('\f', true);
+            return;
+        }
+
+        fail(URLFilterParser::UnsupportedCharacterClass);
     }
 
     void NODELETE quantifyAtom(unsigned minimum, unsigned maximum, bool)
