@@ -221,9 +221,24 @@ public:
         m_floatingTerm = Term(Term::EndOfLineAssertionTerm);
     }
 
-    void NODELETE assertionWordBoundary(bool)
+    void assertionWordBoundary(bool inverted)
     {
-        fail(URLFilterParser::WordBoundary);
+        if (hasError())
+            return;
+
+        sinkFloatingTermIfNecessary();
+        ASSERT(!m_floatingTerm.isValid());
+
+        // Approximate \b by matching a non-word character.
+        // \B (inverted) matches a word character.
+        m_floatingTerm = Term(Term::CharacterSetTerm, !inverted);
+        for (unsigned i = '0'; i <= '9'; ++i)
+            m_floatingTerm.addCharacter(static_cast<char16_t>(i), true);
+        for (unsigned i = 'a'; i <= 'z'; ++i)
+            m_floatingTerm.addCharacter(static_cast<char16_t>(i), true);
+        for (unsigned i = 'A'; i <= 'Z'; ++i)
+            m_floatingTerm.addCharacter(static_cast<char16_t>(i), true);
+        m_floatingTerm.addCharacter('_', true);
     }
 
     void atomCharacterClassBegin(bool inverted = false)
