@@ -1,33 +1,15 @@
-cmake_minimum_required(VERSION 3.20)
+# This file is included from the WebKit root CMakeLists.txt via add_subdirectory.
+# It expects the full WebKit CMake infrastructure to be available (WTF target, etc.)
+#
+# Build with:
+#   cmake -B build -G Ninja -DPORT=GTK -DENABLE_TOOLS=OFF -DENABLE_WEBCORE=OFF \
+#         -DENABLE_WEBKIT=OFF -DENABLE_CONTENT_EXTENSIONS=ON <webkit-root>
+#   cmake --build build --target validate-dnr-rules
 
-set(WEBKIT_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../..")
+set(CE_DIR "${CMAKE_SOURCE_DIR}/Source/WebCore/contentextensions")
+set(JSC_DIR "${CMAKE_SOURCE_DIR}/Source/JavaScriptCore")
+set(TOOL_DIR "${CMAKE_CURRENT_SOURCE_DIR}")
 
-# Set up WebKit's CMake module path before project() so platform detection works
-set(CMAKE_MODULE_PATH "${WEBKIT_ROOT}/Source/cmake" ${CMAKE_MODULE_PATH})
-list(APPEND CMAKE_MODULE_PATH "${WEBKIT_ROOT}/Source/cmake")
-
-project(validate-dnr-rules CXX C)
-
-set(CMAKE_CXX_STANDARD 23)
-set(CMAKE_CXX_STANDARD_REQUIRED ON)
-
-# WebKit build system variables
-set(WTF_DIR "${WEBKIT_ROOT}/Source/WTF")
-set(WTF_SCRIPTS_DIR "${WTF_DIR}/wtf/Scripts")
-set(JavaScriptCore_SCRIPTS_DIR "${WEBKIT_ROOT}/Source/JavaScriptCore/Scripts")
-
-# Include WebKit's common cmake (handles platform detection, find_package, etc.)
-include(WebKitCommon)
-
-# Build WTF as a dependency
-if (NOT TARGET WTF)
-    add_subdirectory("${WEBKIT_ROOT}/Source/WTF" "${CMAKE_BINARY_DIR}/WTF")
-endif()
-
-set(CE_DIR "${WEBKIT_ROOT}/Source/WebCore/contentextensions")
-set(JSC_DIR "${WEBKIT_ROOT}/Source/JavaScriptCore")
-
-# Content extension sources (compiled from the WebKit tree, not copied)
 set(CE_SOURCES
     ${CE_DIR}/URLFilterParser.cpp
     ${CE_DIR}/CombinedURLFilters.cpp
@@ -35,10 +17,9 @@ set(CE_SOURCES
     ${CE_DIR}/NFA.cpp
 )
 
-# Our tool sources
 set(TOOL_SOURCES
-    src/main.cpp
-    src/stubs.cpp
+    ${TOOL_DIR}/src/main.cpp
+    ${TOOL_DIR}/src/stubs.cpp
 )
 
 add_executable(validate-dnr-rules ${TOOL_SOURCES} ${CE_SOURCES})
@@ -51,12 +32,12 @@ target_compile_definitions(validate-dnr-rules PRIVATE
 )
 
 target_include_directories(validate-dnr-rules PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}/src
+    ${TOOL_DIR}/src
     ${CE_DIR}
 )
 
-# Create include symlinks so <WebCore/...> and <JavaScriptCore/...> resolve
-set(INCLUDE_BRIDGE_DIR "${CMAKE_BINARY_DIR}/include-bridge")
+# Create include bridge so <WebCore/...> and <JavaScriptCore/...> resolve
+set(INCLUDE_BRIDGE_DIR "${CMAKE_BINARY_DIR}/validate-dnr-includes")
 file(MAKE_DIRECTORY "${INCLUDE_BRIDGE_DIR}")
 file(CREATE_LINK "${CE_DIR}" "${INCLUDE_BRIDGE_DIR}/WebCore" SYMBOLIC)
 file(CREATE_LINK "${JSC_DIR}" "${INCLUDE_BRIDGE_DIR}/JavaScriptCore" SYMBOLIC)

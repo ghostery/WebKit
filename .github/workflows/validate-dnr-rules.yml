@@ -6,6 +6,8 @@ on:
     paths:
       - 'ghostery/validate-dnr-rules/**'
       - 'Source/WebCore/contentextensions/**'
+      - 'Source/WTF/**'
+      - 'CMakeLists.txt'
       - '.github/workflows/validate-dnr-rules.yml'
   workflow_dispatch:
 
@@ -17,41 +19,41 @@ jobs:
         include:
           - os: macos-latest
             name: macos-arm64
+            port: Mac
           - os: ubuntu-latest
             name: linux-x64
+            port: GTK
     runs-on: ${{ matrix.os }}
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
 
       - name: Install dependencies (Linux)
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y cmake ninja-build libicu-dev pkg-config \
-            ruby ruby-dev libglib2.0-dev unifdef
+          sudo apt-get install -y cmake ninja-build pkg-config \
+            libicu-dev libglib2.0-dev unifdef ruby
 
       - name: Install dependencies (macOS)
         if: runner.os == 'macOS'
         run: brew install cmake ninja icu4c pkg-config
 
-      - name: Configure (Linux)
-        if: runner.os == 'Linux'
+      - name: Configure
         run: |
           cmake -B build -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
-            -DPORT=GTK \
-            ghostery/validate-dnr-rules
-
-      - name: Configure (macOS)
-        if: runner.os == 'macOS'
-        run: |
-          cmake -B build -G Ninja \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DPORT=Mac \
-            ghostery/validate-dnr-rules
+            -DPORT=${{ matrix.port }} \
+            -DENABLE_TOOLS=OFF \
+            -DENABLE_API_TESTS=OFF \
+            -DENABLE_WEBCORE=OFF \
+            -DENABLE_WEBKIT=OFF \
+            -DENABLE_CONTENT_EXTENSIONS=ON \
+            .
         env:
-          CMAKE_PREFIX_PATH: /opt/homebrew/opt/icu4c
+          CMAKE_PREFIX_PATH: ${{ runner.os == 'macOS' && '/opt/homebrew/opt/icu4c' || '' }}
 
       - name: Build
         run: cmake --build build --target validate-dnr-rules
@@ -59,6 +61,7 @@ jobs:
       - name: Test
         run: |
           echo '[{"id":1,"priority":1,"action":{"type":"block"},"condition":{"regexFilter":"ad[0-9]{2}\\.js"}}]' > /tmp/test-rules.json
+          echo '[{"id":2,"priority":1,"action":{"type":"block"},"condition":{"regexFilter":"(?:ads|tracking)\\.com"}}]' >> /tmp/test-rules.json
           ./build/validate-dnr-rules /tmp/test-rules.json
 
       - name: Upload artifact

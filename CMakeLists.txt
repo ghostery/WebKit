@@ -54,6 +54,13 @@ if (DEVELOPER_MODE)
 endif ()
 
 # -----------------------------------------------------------------------------
+# Ghostery tools
+# -----------------------------------------------------------------------------
+if (EXISTS "${CMAKE_SOURCE_DIR}/ghostery/validate-dnr-rules/CMakeLists.txt")
+    add_subdirectory(ghostery/validate-dnr-rules)
+endif ()
+
+# -----------------------------------------------------------------------------
 # Print the features list last, for maximum visibility.
 # -----------------------------------------------------------------------------
 PRINT_WEBKIT_OPTIONS()
