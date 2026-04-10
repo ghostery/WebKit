@@ -4016,6 +4016,203 @@ TEST(WKWebExtensionAPIDeclarativeNetRequest, MigrateDeclarativeNetRequestDataToN
     [manager run];
 }
 
+// Helper: translate a JSON string of DNR rules through the translator pipeline.
+static NSDictionary *translateDNRRules(NSString *rulesJSON, NSString *rulesetID, NSArray<NSString *> **outTranslationErrors)
+{
+    NSData *data = [rulesJSON dataUsingEncoding:NSUTF8StringEncoding];
+    NSDictionary<NSString *, NSData *> *jsonDataDict = @{ rulesetID: data };
+
+    NSArray<NSString *> *jsonErrors = nil;
+    auto *jsonObjects = [_WKWebExtensionDeclarativeNetRequestTranslator jsonObjectsFromData:jsonDataDict errorStrings:&jsonErrors];
+
+    auto *convertedRules = [_WKWebExtensionDeclarativeNetRequestTranslator translateRules:jsonObjects errorStrings:outTranslationErrors];
+
+    return @{
+        @"convertedRules": convertedRules ?: @[],
+        @"jsonErrors": jsonErrors ?: @[],
+    };
+}
+
+// Helper: extract a JSON file from ghostery-dnr-rulesets.zip bundled in test resources.
+static NSData *ghosteryRulesetData(NSString *jsonFilename)
+{
+    NSString *zipPath = [NSBundle.test_resourcesBundle pathForResource:@"ghostery-dnr-rulesets" ofType:@"zip"];
+    if (!zipPath)
+        return nil;
+
+    NSString *tempDir = [NSTemporaryDirectory() stringByAppendingPathComponent:[[NSUUID UUID] UUIDString]];
+    NSTask *task = [[NSTask alloc] init];
+    task.launchPath = @"/usr/bin/unzip";
+    task.arguments = @[@"-o", zipPath, jsonFilename, @"-d", tempDir];
+    task.standardOutput = nil;
+    task.standardError = nil;
+    [task launch];
+    [task waitUntilExit];
+
+    NSString *jsonPath = [tempDir stringByAppendingPathComponent:jsonFilename];
+    NSData *data = [NSData dataWithContentsOfFile:jsonPath];
+    [[NSFileManager defaultManager] removeItemAtPath:tempDir error:nil];
+    return data;
+}
+
+// MARK: - Bug: regexFilter rejects valid quantifiers like {2}, {2,3}, {4,}
+// These are standard regular language features supported by Chrome and Firefox DNR.
+// WebKit's URLFilterParser does not implement bounded repetition.
+
+TEST(WKWebExtensionAPIDeclarativeNetRequest, RegexFilterQuantifiers)
+{
+    auto *rules = @"["
+        "{ \"id\": 1, \"priority\": 1, \"action\": { \"type\": \"block\" }, \"condition\": { \"regexFilter\": \"ad[0-9]{2}\\\\.js\" } },"
+        "{ \"id\": 2, \"priority\": 1, \"action\": { \"type\": \"block\" }, \"condition\": { \"regexFilter\": \"tracker-[a-z]{3,8}\\\\.com\" } },"
+        "{ \"id\": 3, \"priority\": 1, \"action\": { \"type\": \"block\" }, \"condition\": { \"regexFilter\": \"pixel-[0-9]{1,}\\\\.gif\" } }"
+    "]";
+
+    NSArray<NSString *> *errors = nil;
+    NSDictionary *result = translateDNRRules(rules, @"test", &errors);
+    NSArray *converted = result[@"convertedRules"];
+
+    EXPECT_EQ(errors.count, 0u);
+    EXPECT_EQ([converted count], 3u);
+}
+
+// MARK: - Bug: regexFilter rejects non-capturing groups (?:...)
+// Non-capturing groups are a standard regex feature that doesn't require backtracking
+// and can be compiled to a DFA. Chrome and Firefox DNR support them.
+
+TEST(WKWebExtensionAPIDeclarativeNetRequest, RegexFilterNonCapturingGroups)
+{
+    auto *rules = @"["
+        "{ \"id\": 1, \"priority\": 1, \"action\": { \"type\": \"block\" }, \"condition\": { \"regexFilter\": \"(?:ads|tracking)\\\\.example\\\\.com\" } },"
+        "{ \"id\": 2, \"priority\": 1, \"action\": { \"type\": \"block\" }, \"condition\": { \"regexFilter\": \"tracker(?:vn)?\\\\.com\" } }"
+    "]";
+
+    NSArray<NSString *> *errors = nil;
+    NSDictionary *result = translateDNRRules(rules, @"test", &errors);
+    NSArray *converted = result[@"convertedRules"];
+
+    EXPECT_EQ(errors.count, 0u);
+    EXPECT_EQ([converted count], 2u);
+}
+
+// MARK: - Bug: regexFilter rejects word boundaries \b
+// Word boundaries are supported by Chrome and Firefox DNR.
+
+TEST(WKWebExtensionAPIDeclarativeNetRequest, RegexFilterWordBoundary)
+{
+    auto *rules = @"["
+        "{ \"id\": 1, \"priority\": 1, \"action\": { \"type\": \"block\" }, \"condition\": { \"regexFilter\": \"\\\\.workers\\\\.dev/help/[0-9]+\\\\b\" } }"
+    "]";
+
+    NSArray<NSString *> *errors = nil;
+    NSDictionary *result = translateDNRRules(rules, @"test", &errors);
+    NSArray *converted = result[@"convertedRules"];
+
+    EXPECT_EQ(errors.count, 0u);
+    EXPECT_EQ([converted count], 1u);
+}
+
+// MARK: - Bug: translator emits spurious "duplicate rule id 0" for invalid rules
+// When a rule fails validation (e.g., unsupported regex), initWithDictionary: returns nil.
+// The translator then reads nil.ruleID which returns 0 (ObjC nil messaging), causing
+// every failed rule to be tracked as id 0 and triggering false duplicate-id errors.
+
+TEST(WKWebExtensionAPIDeclarativeNetRequest, InvalidRuleShouldNotCauseDuplicateIDError)
+{
+    auto *rules = @"["
+        "{ \"id\": 100, \"priority\": 1, \"action\": { \"type\": \"block\" }, \"condition\": { \"regexFilter\": \"test{2}\" } },"
+        "{ \"id\": 200, \"priority\": 1, \"action\": { \"type\": \"block\" }, \"condition\": { \"regexFilter\": \"other{3}\" } }"
+    "]";
+
+    NSArray<NSString *> *errors = nil;
+    translateDNRRules(rules, @"test", &errors);
+
+    for (NSString *error in errors)
+        EXPECT_FALSE([error containsString:@"duplicates the rule id"]);
+}
+
+// MARK: - Bug: large real-world ruleset produces silent translation errors
+// Tested with Ghostery's adblocking DNR ruleset (73k+ rules).
+// In production Safari, these errors are silently discarded because:
+// 1. jsonDeserializationErrorStrings is collected but never read
+// 2. parsingErrorStrings is only processed behind ENABLE(DNR_ON_RULE_MATCHED_DEBUG) which defaults to 0
+
+TEST(WKWebExtensionAPIDeclarativeNetRequest, GhosteryLargeRulesetTranslation)
+{
+    NSData *rulesData = ghosteryRulesetData(@"dnr-ads.json");
+    EXPECT_NOT_NULL(rulesData);
+    if (!rulesData)
+        return;
+
+    NSDictionary<NSString *, NSData *> *jsonDataDict = @{ @"ghostery-ads": rulesData };
+
+    NSArray<NSString *> *jsonDeserializationErrors = nil;
+    auto *allJSONObjects = [_WKWebExtensionDeclarativeNetRequestTranslator jsonObjectsFromData:jsonDataDict errorStrings:&jsonDeserializationErrors];
+
+    NSUInteger totalRulesParsed = 0;
+    for (NSString *key in allJSONObjects)
+        totalRulesParsed += [allJSONObjects[key] count];
+    NSLog(@"Ghostery DNR: %lu bytes, %lu rules parsed", (unsigned long)rulesData.length, (unsigned long)totalRulesParsed);
+
+    NSArray<NSString *> *translationErrors = nil;
+    auto *convertedRules = [_WKWebExtensionDeclarativeNetRequestTranslator translateRules:allJSONObjects errorStrings:&translationErrors];
+
+    NSLog(@"Ghostery DNR: %lu translation errors, %lu content blocker rules produced", (unsigned long)translationErrors.count, (unsigned long)convertedRules.count);
+    for (NSString *error in translationErrors)
+        NSLog(@"  %@", error);
+
+    EXPECT_GT(convertedRules.count, 0u);
+    EXPECT_EQ(jsonDeserializationErrors.count, 0u);
+    EXPECT_EQ(translationErrors.count, 0u);
+}
+
+// MARK: - Large real-world ruleset compilation performance
+// Ghostery's adblocking ruleset (74k+ content blocker rules after translation)
+// takes ~65 seconds to compile to DFA bytecode, exceeding typical extension loading timeouts.
+
+TEST(WKWebExtensionAPIDeclarativeNetRequest, GhosteryLargeRulesetCompilation)
+{
+    NSData *rulesData = ghosteryRulesetData(@"dnr-ads.json");
+    EXPECT_NOT_NULL(rulesData);
+    if (!rulesData)
+        return;
+
+    NSDictionary<NSString *, NSData *> *jsonDataDict = @{ @"ghostery-ads": rulesData };
+
+    NSArray<NSString *> *jsonErrors = nil;
+    auto *allJSONObjects = [_WKWebExtensionDeclarativeNetRequestTranslator jsonObjectsFromData:jsonDataDict errorStrings:&jsonErrors];
+
+    NSArray<NSString *> *translationErrors = nil;
+    auto *convertedRules = [_WKWebExtensionDeclarativeNetRequestTranslator translateRules:allJSONObjects errorStrings:&translationErrors];
+
+    NSError *jsonSerializationError = nil;
+    NSData *jsonData = [NSJSONSerialization dataWithJSONObject:convertedRules options:0 error:&jsonSerializationError];
+    EXPECT_NULL(jsonSerializationError);
+    if (jsonSerializationError)
+        return;
+
+    NSString *jsonString = [[NSString alloc] initWithData:jsonData encoding:NSUTF8StringEncoding];
+    NSLog(@"Ghostery DNR: compiling %lu content blocker rules (%lu bytes)", (unsigned long)convertedRules.count, (unsigned long)jsonString.length);
+
+    __block bool compilationDone = false;
+    __block bool compilationSucceeded = false;
+
+    auto startTime = [NSDate date];
+
+    [[WKContentRuleListStore defaultStore] compileContentRuleListForIdentifier:@"ghostery-ads-test" encodedContentRuleList:jsonString completionHandler:^(WKContentRuleList *ruleList, NSError *error) {
+        auto elapsed = -[startTime timeIntervalSinceNow];
+        NSLog(@"Ghostery DNR: compilation %@ in %.1f seconds%s", ruleList ? @"succeeded" : @"FAILED", elapsed, error ? [NSString stringWithFormat:@": %@", error].UTF8String : "");
+
+        compilationSucceeded = (ruleList != nil);
+        compilationDone = true;
+    }];
+
+    TestWebKitAPI::Util::run(&compilationDone);
+
+    EXPECT_TRUE(compilationSucceeded);
+
+    [[WKContentRuleListStore defaultStore] removeContentRuleListForIdentifier:@"ghostery-ads-test" completionHandler:^(NSError *error) { }];
+}
+
 } // namespace TestWebKitAPI
 
 #endif // ENABLE(WK_WEB_EXTENSIONS)
