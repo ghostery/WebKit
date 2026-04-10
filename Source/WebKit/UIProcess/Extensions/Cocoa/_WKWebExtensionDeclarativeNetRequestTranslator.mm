@@ -50,6 +50,16 @@ using namespace WebKit;
             NSString *errorString;
             _WKWebExtensionDeclarativeNetRequestRule *rule = [[_WKWebExtensionDeclarativeNetRequestRule alloc] initWithDictionary:ruleJSON rulesetID:rulesetID errorString:&errorString];
 
+            if (!rule) {
+                if (errorString) {
+                    totalErrorCount++;
+
+                    if (errorStrings.count < maximumNumberOfDeclarativeNetRequestErrorsToSurface)
+                        [errorStrings addObject:errorString];
+                }
+                continue;
+            }
+
             if (!rulesetIDsToRuleIDs[rulesetID])
                 rulesetIDsToRuleIDs[rulesetID] = [NSMutableSet set];
 
@@ -61,15 +71,7 @@ using namespace WebKit;
             }
 
             [rulesetIDsToRuleIDs[rulesetID] addObject:@(rule.ruleID)];
-
-            if (rule)
-                [allValidatedRules addObject:rule];
-            else if (errorString) {
-                totalErrorCount++;
-
-                if (errorStrings.count < maximumNumberOfDeclarativeNetRequestErrorsToSurface)
-                    [errorStrings addObject:errorString];
-            }
+            [allValidatedRules addObject:rule];
         }
     }
 
