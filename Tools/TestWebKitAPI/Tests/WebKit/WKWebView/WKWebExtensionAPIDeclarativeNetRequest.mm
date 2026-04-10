@@ -4161,16 +4161,14 @@ TEST(WKWebExtensionAPIDeclarativeNetRequest, RegexFilterWordBoundary)
     EXPECT_EQ([converted count], 1u);
 }
 
-// MARK: - Bug: translator emits spurious "duplicate rule id 0" for invalid rules
-// When a rule fails validation (e.g., unsupported regex), initWithDictionary: returns nil.
-// The translator then reads nil.ruleID which returns 0 (ObjC nil messaging), causing
-// every failed rule to be tracked as id 0 and triggering false duplicate-id errors.
+// MARK: - Bug fix: translator no longer emits spurious "duplicate rule id 0" for invalid rules
 
 TEST(WKWebExtensionAPIDeclarativeNetRequest, InvalidRuleShouldNotCauseDuplicateIDError)
 {
+    // Use backreferences which are genuinely unsupported (requires backtracking).
     auto *rules = @"["
-        "{ \"id\": 100, \"priority\": 1, \"action\": { \"type\": \"block\" }, \"condition\": { \"regexFilter\": \"test{2}\" } },"
-        "{ \"id\": 200, \"priority\": 1, \"action\": { \"type\": \"block\" }, \"condition\": { \"regexFilter\": \"other{3}\" } }"
+        "{ \"id\": 100, \"priority\": 1, \"action\": { \"type\": \"block\" }, \"condition\": { \"regexFilter\": \"(test)\\\\1\" } },"
+        "{ \"id\": 200, \"priority\": 1, \"action\": { \"type\": \"block\" }, \"condition\": { \"regexFilter\": \"(other)\\\\1\" } }"
     "]";
 
     NSArray<NSString *> *errors = nil;
@@ -4178,6 +4176,128 @@ TEST(WKWebExtensionAPIDeclarativeNetRequest, InvalidRuleShouldNotCauseDuplicateI
 
     for (NSString *error in errors)
         EXPECT_FALSE([error containsString:@"duplicates the rule id"]);
+}
+
+// MARK: - regexFilter: character class shorthands inside [...] brackets
+
+TEST(WKWebExtensionAPIDeclarativeNetRequest, RegexFilterCharacterClassShorthands)
+{
+    auto *rules = @"["
+        "{ \"id\": 1, \"priority\": 1, \"action\": { \"type\": \"block\" }, \"condition\": { \"regexFilter\": \"ad[\\\\d]+\\\\.js\" } },"
+        "{ \"id\": 2, \"priority\": 1, \"action\": { \"type\": \"block\" }, \"condition\": { \"regexFilter\": \"[\\\\w\\\\W]{30,}\" } },"
+        "{ \"id\": 3, \"priority\": 1, \"action\": { \"type\": \"block\" }, \"condition\": { \"regexFilter\": \"id[^\\\\d]?$\" } }"
+    "]";
+
+    NSArray<NSString *> *errors = nil;
+    NSDictionary *result = translateDNRRules(rules, @"test", &errors);
+    NSArray *converted = result[@"convertedRules"];
+
+    EXPECT_EQ(errors.count, 0u);
+    EXPECT_EQ([converted count], 3u);
+}
+
+// MARK: - regexFilter: $ end-of-line assertion inside alternation groups
+
+TEST(WKWebExtensionAPIDeclarativeNetRequest, RegexFilterEndOfLineInAlternation)
+{
+    auto *rules = @"["
+        "{ \"id\": 1, \"priority\": 1, \"action\": { \"type\": \"block\" }, \"condition\": { \"regexFilter\": \"example\\\\.top/l(?:/|$)\" } }"
+    "]";
+
+    NSArray<NSString *> *errors = nil;
+    NSDictionary *result = translateDNRRules(rules, @"test", &errors);
+    NSArray *converted = result[@"convertedRules"];
+
+    EXPECT_EQ(errors.count, 0u);
+    EXPECT_EQ([converted count], 1u);
+}
+
+// MARK: - regexFilter: end-to-end blocking test with alternation
+
+TEST(WKWebExtensionAPIDeclarativeNetRequest, RegexFilterAlternationBlocking)
+{
+    TestWebKitAPI::HTTPServer server({
+        { "/"_s, { { { "Content-Type"_s, "text/html"_s } }, "<iframe src='/tracking.html'></iframe>"_s } },
+        { "/tracking.html"_s, { { { "Content-Type"_s, "text/html"_s } }, "<body></body>"_s } },
+    }, TestWebKitAPI::HTTPServer::Protocol::Http);
+
+    auto *backgroundScript = Util::constructScript(@[
+        @"browser.test.sendMessage('Load Tab')"
+    ]);
+
+    auto *manifest = @{
+        @"manifest_version": @3,
+        @"permissions": @[ @"declarativeNetRequest" ],
+        @"background": @{ @"scripts": @[ @"background.js" ], @"type": @"module", @"persistent": @NO },
+        @"declarative_net_request": @{
+            @"rule_resources": @[
+                @{ @"id": @"blockAds", @"enabled": @YES, @"path": @"rules.json" }
+            ]
+        }
+    };
+
+    auto *rules = @"[ { \"id\" : 1, \"priority\": 1, \"action\" : { \"type\" : \"block\" }, \"condition\" : { \"regexFilter\" : \"(?:tracking|analytics)\\\\.html\" } } ]";
+
+    auto manager = Util::loadExtension(manifest, @{ @"background.js": backgroundScript, @"rules.json": rules });
+    [manager.get().context setPermissionStatus:WKWebExtensionContextPermissionStatusGrantedExplicitly forPermission:WKWebExtensionPermissionDeclarativeNetRequest];
+    [manager runUntilTestMessage:@"Load Tab"];
+
+    auto webView = manager.get().defaultTab.webView;
+    auto navigationDelegate = adoptNS([TestNavigationDelegate new]);
+
+    __block bool receivedActionNotification { false };
+    navigationDelegate.get().contentRuleListPerformedAction = ^(WKWebView *, NSString *identifier, _WKContentRuleListAction *action, NSURL *url) {
+        receivedActionNotification = true;
+    };
+
+    webView.navigationDelegate = navigationDelegate.get();
+    [webView loadRequest:server.requestWithLocalhost()];
+
+    Util::run(&receivedActionNotification);
+}
+
+// MARK: - regexFilter: end-to-end blocking test with \d shorthand
+
+TEST(WKWebExtensionAPIDeclarativeNetRequest, RegexFilterDigitShorthandBlocking)
+{
+    TestWebKitAPI::HTTPServer server({
+        { "/"_s, { { { "Content-Type"_s, "text/html"_s } }, "<iframe src='/tracker42.html'></iframe>"_s } },
+        { "/tracker42.html"_s, { { { "Content-Type"_s, "text/html"_s } }, "<body></body>"_s } },
+    }, TestWebKitAPI::HTTPServer::Protocol::Http);
+
+    auto *backgroundScript = Util::constructScript(@[
+        @"browser.test.sendMessage('Load Tab')"
+    ]);
+
+    auto *manifest = @{
+        @"manifest_version": @3,
+        @"permissions": @[ @"declarativeNetRequest" ],
+        @"background": @{ @"scripts": @[ @"background.js" ], @"type": @"module", @"persistent": @NO },
+        @"declarative_net_request": @{
+            @"rule_resources": @[
+                @{ @"id": @"blockAds", @"enabled": @YES, @"path": @"rules.json" }
+            ]
+        }
+    };
+
+    auto *rules = @"[ { \"id\" : 1, \"priority\": 1, \"action\" : { \"type\" : \"block\" }, \"condition\" : { \"regexFilter\" : \"tracker\\\\d+\" } } ]";
+
+    auto manager = Util::loadExtension(manifest, @{ @"background.js": backgroundScript, @"rules.json": rules });
+    [manager.get().context setPermissionStatus:WKWebExtensionContextPermissionStatusGrantedExplicitly forPermission:WKWebExtensionPermissionDeclarativeNetRequest];
+    [manager runUntilTestMessage:@"Load Tab"];
+
+    auto webView = manager.get().defaultTab.webView;
+    auto navigationDelegate = adoptNS([TestNavigationDelegate new]);
+
+    __block bool receivedActionNotification { false };
+    navigationDelegate.get().contentRuleListPerformedAction = ^(WKWebView *, NSString *identifier, _WKContentRuleListAction *action, NSURL *url) {
+        receivedActionNotification = true;
+    };
+
+    webView.navigationDelegate = navigationDelegate.get();
+    [webView loadRequest:server.requestWithLocalhost()];
+
+    Util::run(&receivedActionNotification);
 }
 
 // MARK: - Bug: large real-world ruleset produces silent translation errors

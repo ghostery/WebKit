@@ -304,9 +304,45 @@ public:
         // Nothing to do here. The character set atom may have a quantifier, we sink the atom lazily.
     }
 
-    void NODELETE atomCharacterClassBuiltIn(JSC::Yarr::BuiltInCharacterClassID, bool)
+    void atomCharacterClassBuiltIn(JSC::Yarr::BuiltInCharacterClassID builtInCharacterClassID, bool inverted)
     {
-        fail(URLFilterParser::AtomCharacter);
+        if (hasError())
+            return;
+
+        auto addChars = [&](std::initializer_list<std::pair<char16_t, char16_t>> ranges) {
+            if (!inverted) {
+                for (auto [lo, hi] : ranges) {
+                    for (unsigned i = lo; i <= hi; ++i)
+                        m_floatingTerm.addCharacter(static_cast<char16_t>(i), true);
+                }
+            } else {
+                // Build a set of characters in the class, then add everything NOT in it.
+                std::array<bool, 128> inClass { };
+                for (auto [lo, hi] : ranges) {
+                    for (unsigned i = lo; i <= hi; ++i)
+                        inClass[i] = true;
+                }
+                for (unsigned i = 1; i < 128; ++i) {
+                    if (!inClass[i])
+                        m_floatingTerm.addCharacter(static_cast<char16_t>(i), true);
+                }
+            }
+        };
+
+        switch (builtInCharacterClassID) {
+        case JSC::Yarr::BuiltInCharacterClassID::DigitClassID:
+            addChars({ {'0', '9'} });
+            break;
+        case JSC::Yarr::BuiltInCharacterClassID::WordClassID:
+            addChars({ {'0', '9'}, {'a', 'z'}, {'A', 'Z'}, {'_', '_'} });
+            break;
+        case JSC::Yarr::BuiltInCharacterClassID::SpaceClassID:
+            addChars({ {' ', ' '}, {'\t', '\t'}, {'\n', '\n'}, {'\r', '\r'}, {'\f', '\f'} });
+            break;
+        default:
+            fail(URLFilterParser::AtomCharacter);
+            break;
+        }
     }
 
     void atomParenthesesSubpatternBegin(bool = true, std::optional<String> = std::nullopt)
@@ -387,7 +423,7 @@ private:
             return;
         }
 
-        if (m_floatingTerm.isEndOfLineAssertion())
+        if (m_floatingTerm.isEndOfLineAssertion() && m_openGroups.isEmpty())
             m_hasProcessedEndOfLineAssertion = true;
 
         if (!m_openGroups.isEmpty()) {
