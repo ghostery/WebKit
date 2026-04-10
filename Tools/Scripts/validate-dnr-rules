@@ -1,0 +1,203 @@
+#!/bin/bash
+# validate-dnr-rules - Validate Declarative Net Request rulesets using WebKit's translator
+#
+# Usage: validate-dnr-rules [--compile] <rules.json> [<rules.json> ...]
+#
+# Runs DNR rule files through WebKit's translation pipeline and reports errors.
+# With --compile, also compiles translated rules to content blocker bytecode.
+#
+# Requires: WebKit built with Tools/Scripts/build-webkit --debug
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+SOURCE_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+
+COMPILE=0
+FILES=()
+
+for arg in "$@"; do
+    case "$arg" in
+        --compile) COMPILE=1 ;;
+        --help|-h)
+            echo "Usage: validate-dnr-rules [--compile] <rules.json> [<rules.json> ...]"
+            echo ""
+            echo "Validates DNR rulesets using WebKit's native translator pipeline."
+            echo "Reports translation errors (unsupported regex, invalid rules, etc)."
+            echo ""
+            echo "Options:"
+            echo "  --compile  Also compile translated rules to content blocker bytecode"
+            echo "  --help     Show this help"
+            exit 0
+            ;;
+        *) FILES+=("$arg") ;;
+    esac
+done
+
+if [ ${#FILES[@]} -eq 0 ]; then
+    echo "Error: No input files specified. Use --help for usage." >&2
+    exit 1
+fi
+
+BUILD_DIR="$("$SCRIPT_DIR/webkit-build-directory" --configuration=Debug --top-level 2>/dev/null || true)"
+if [ -z "$BUILD_DIR" ]; then
+    BUILD_DIR="$SOURCE_ROOT/WebKitBuild"
+fi
+
+FRAMEWORK_DIR="$BUILD_DIR/Debug"
+
+if [ ! -d "$FRAMEWORK_DIR/WebKit.framework" ]; then
+    echo "Error: WebKit.framework not found at $FRAMEWORK_DIR" >&2
+    echo "Build WebKit first: Tools/Scripts/build-webkit --debug" >&2
+    exit 1
+fi
+
+TOOL_SRC=$(mktemp /tmp/validate-dnr-XXXXXX.mm)
+TOOL_BIN=$(mktemp /tmp/validate-dnr-XXXXXX)
+
+trap "rm -f '$TOOL_SRC' '$TOOL_BIN'" EXIT
+
+cat > "$TOOL_SRC" << 'OBJC_SOURCE'
+#import <Foundation/Foundation.h>
+#import <WebKit/WebKit.h>
+#import <WebKit/_WKWebExtensionDeclarativeNetRequestTranslator.h>
+#import <WebKit/_WKWebExtensionDeclarativeNetRequestRule.h>
+#import <WebKit/WKContentRuleListPrivate.h>
+
+int main(int argc, const char *argv[]) {
+    @autoreleasepool {
+        BOOL doCompile = NO;
+        NSMutableArray<NSString *> *files = [NSMutableArray array];
+
+        for (int i = 1; i < argc; i++) {
+            NSString *arg = [NSString stringWithUTF8String:argv[i]];
+            if ([arg isEqualToString:@"--compile"])
+                doCompile = YES;
+            else
+                [files addObject:arg];
+        }
+
+        int totalErrors = 0;
+
+        for (NSString *filePath in files) {
+            NSData *data = [NSData dataWithContentsOfFile:filePath];
+            if (!data) {
+                fprintf(stderr, "ERROR: Cannot read file: %s\n", filePath.UTF8String);
+                totalErrors++;
+                continue;
+            }
+
+            NSString *rulesetID = [[filePath lastPathComponent] stringByDeletingPathExtension];
+            NSDictionary<NSString *, NSData *> *jsonDataDict = @{ rulesetID: data };
+
+            printf("=== %s ===\n", filePath.UTF8String);
+            printf("File size: %lu bytes\n", (unsigned long)data.length);
+
+            // Step 1: JSON deserialization
+            NSArray<NSString *> *jsonErrors = nil;
+            NSDictionary *allJSONObjects = [_WKWebExtensionDeclarativeNetRequestTranslator jsonObjectsFromData:jsonDataDict errorStrings:&jsonErrors];
+
+            if (jsonErrors.count > 0) {
+                printf("JSON deserialization errors: %lu\n", (unsigned long)jsonErrors.count);
+                for (NSString *error in jsonErrors) {
+                    printf("  ERROR: %s\n", error.UTF8String);
+                    totalErrors++;
+                }
+            }
+
+            NSUInteger ruleCount = 0;
+            for (NSString *key in allJSONObjects)
+                ruleCount += [allJSONObjects[key] count];
+            printf("Rules parsed: %lu\n", (unsigned long)ruleCount);
+
+            // Step 2: Translation (DNR -> WebKit content blocker format)
+            NSArray<NSString *> *translationErrors = nil;
+            NSArray *convertedRules = [_WKWebExtensionDeclarativeNetRequestTranslator translateRules:allJSONObjects errorStrings:&translationErrors];
+
+            printf("Rules translated: %lu\n", (unsigned long)convertedRules.count);
+
+            if (translationErrors.count > 0) {
+                printf("Translation errors: %lu\n", (unsigned long)translationErrors.count);
+                for (NSString *error in translationErrors) {
+                    printf("  ERROR: %s\n", error.UTF8String);
+                    totalErrors++;
+                }
+            }
+
+            // Step 3: Optional compilation
+            if (doCompile && convertedRules.count > 0) {
+                NSError *jsonSerializationError = nil;
+                NSData *jsonData = [NSJSONSerialization dataWithJSONObject:convertedRules options:0 error:&jsonSerializationError];
+                if (jsonSerializationError) {
+                    printf("  ERROR: JSON serialization failed: %s\n", jsonSerializationError.localizedDescription.UTF8String);
+                    totalErrors++;
+                } else {
+                    NSString *jsonString = [[NSString alloc] initWithData:jsonData encoding:NSUTF8StringEncoding];
+                    printf("Content blocker JSON: %lu bytes\n", (unsigned long)jsonString.length);
+                    printf("Compiling...");
+                    fflush(stdout);
+
+                    __block BOOL done = NO;
+                    __block BOOL success = NO;
+                    __block NSString *compilationError = nil;
+
+                    NSDate *startTime = [NSDate date];
+
+                    [[WKContentRuleListStore defaultStore] compileContentRuleListForIdentifier:rulesetID encodedContentRuleList:jsonString completionHandler:^(WKContentRuleList *ruleList, NSError *error) {
+                        success = (ruleList != nil);
+                        if (error)
+                            compilationError = error.localizedDescription;
+                        done = YES;
+                    }];
+
+                    while (!done)
+                        [[NSRunLoop currentRunLoop] runMode:NSDefaultRunLoopMode beforeDate:[NSDate dateWithTimeIntervalSinceNow:0.1]];
+
+                    double elapsed = -[startTime timeIntervalSinceNow];
+
+                    if (success)
+                        printf(" OK (%.1f seconds)\n", elapsed);
+                    else {
+                        printf(" FAILED (%.1f seconds): %s\n", elapsed, compilationError.UTF8String);
+                        totalErrors++;
+                    }
+
+                    [[WKContentRuleListStore defaultStore] removeContentRuleListForIdentifier:rulesetID completionHandler:^(NSError *error) {}];
+                }
+            }
+
+            printf("\n");
+        }
+
+        if (totalErrors == 0)
+            printf("OK: All rules validated successfully.\n");
+        else
+            printf("FAILED: %d error(s) found.\n", totalErrors);
+
+        return totalErrors > 0 ? 1 : 0;
+    }
+}
+OBJC_SOURCE
+
+clang -ObjC++ -std=c++20 -fobjc-arc -w \
+    -F"$FRAMEWORK_DIR" \
+    -framework WebKit -framework Foundation \
+    -lc++ \
+    -Wl,-rpath,"$FRAMEWORK_DIR" \
+    -o "$TOOL_BIN" "$TOOL_SRC" 2>&1
+
+if [ $? -ne 0 ]; then
+    echo "Error: Failed to compile validation tool" >&2
+    exit 1
+fi
+
+ARGS=()
+if [ "$COMPILE" -eq 1 ]; then
+    ARGS+=(--compile)
+fi
+
+for f in "${FILES[@]}"; do
+    ARGS+=("$(cd "$(dirname "$f")" && pwd)/$(basename "$f")")
+done
+
+exec "$TOOL_BIN" "${ARGS[@]}"
