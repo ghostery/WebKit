@@ -200,4 +200,4 @@ for f in "${FILES[@]}"; do
     ARGS+=("$(cd "$(dirname "$f")" && pwd)/$(basename "$f")")
 done
 
-exec "$TOOL_BIN" "${ARGS[@]}"
+DYLD_FRAMEWORK_PATH="$FRAMEWORK_DIR" exec "$TOOL_BIN" "${ARGS[@]}"
