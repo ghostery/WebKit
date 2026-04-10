@@ -27,7 +27,27 @@ jobs:
           fetch-depth: 1
 
       - name: Install WebKit GTK build dependencies
-        run: yes | Tools/gtk/install-dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            cmake ninja-build pkg-config unifdef ruby \
+            libicu-dev libglib2.0-dev libcairo2-dev libharfbuzz-dev \
+            libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \
+            libsoup-3.0-dev libepoxy-dev libwpe-1.0-dev \
+            libwpebackend-fdo-1.0-dev libxslt1-dev libmanette-0.2-dev \
+            libsecret-1-dev libtasn1-6-dev libsystemd-dev \
+            libgcrypt20-dev libwebp-dev liblcms2-dev libopenjp2-7-dev \
+            libavif-dev libjxl-dev libgirepository1.0-dev gobject-introspection \
+            libdrm-dev libgbm-dev libinput-dev libudev-dev wayland-protocols \
+            libwayland-dev libgtk-4-dev libenchant-2-dev
+
+      - name: Cache CMake build
+        uses: actions/cache@v4
+        with:
+          path: build
+          key: cmake-${{ matrix.name }}-${{ hashFiles('Source/WTF/**', 'Source/WebCore/contentextensions/**', 'ghostery/validate-dnr-rules/**') }}
+          restore-keys: |
+            cmake-${{ matrix.name }}-
 
       - name: Configure
         run: |
