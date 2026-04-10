@@ -78,6 +78,7 @@ public:
 
     // Group terms only.
     void extendGroupSubpattern(const Term&);
+    void startNewAlternative();
 
     void quantify(const AtomQuantifier&);
 
@@ -169,7 +170,10 @@ private:
     friend void add(Hasher&, const Term::CharacterSet&);
 
     struct Group {
-        Vector<Term> terms;
+        Vector<Vector<Term>> alternatives;
+
+        Vector<Term>& terms() { return alternatives.last(); }
+        const Vector<Term>& terms() const { return alternatives.first(); }
 
         friend bool operator==(const Group&, const Group&) = default;
     };
@@ -197,7 +201,7 @@ inline void add(Hasher& hasher, const Term::CharacterSet& characterSet)
 
 inline void add(Hasher& hasher, const Term::Group& group)
 {
-    add(hasher, group.terms);
+    add(hasher, group.alternatives);
 }
 
 inline void add(Hasher& hasher, const Term& term)
@@ -253,8 +257,12 @@ inline String Term::toString() const
     case TermType::Group: {
         StringBuilder builder;
         builder.append('(');
-        for (const Term& term : m_atomData.group.terms)
-            builder.append(term.toString());
+        for (unsigned a = 0; a < m_atomData.group.alternatives.size(); ++a) {
+            if (a)
+                builder.append('|');
+            for (const Term& term : m_atomData.group.alternatives[a])
+                builder.append(term.toString());
+        }
         builder.append(')');
         builder.append(quantifierToString(m_quantifier));
         return builder.toString();
@@ -294,6 +302,7 @@ inline Term::Term(GroupTermTag)
     : m_termType(TermType::Group)
 {
     new (NotNull, &m_atomData.group) Group();
+    m_atomData.group.alternatives.append(Vector<Term>());
 }
 
 inline Term::Term(EndOfLineAssertionTermTag)
@@ -371,7 +380,15 @@ inline void Term::extendGroupSubpattern(const Term& term)
     ASSERT_WITH_SECURITY_IMPLICATION(m_termType == TermType::Group);
     if (m_termType != TermType::Group)
         return;
-    m_atomData.group.terms.append(term);
+    m_atomData.group.alternatives.last().append(term);
+}
+
+inline void Term::startNewAlternative()
+{
+    ASSERT_WITH_SECURITY_IMPLICATION(m_termType == TermType::Group);
+    if (m_termType != TermType::Group)
+        return;
+    m_atomData.group.alternatives.append(Vector<Term>());
 }
 
 inline void Term::quantify(const AtomQuantifier& quantifier)
@@ -443,9 +460,11 @@ inline bool Term::matchesAtLeastOneCharacter() const
         return false;
 
     if (m_termType == TermType::Group) {
-        for (const Term& term : m_atomData.group.terms) {
-            if (term.matchesAtLeastOneCharacter())
-                return true;
+        for (const auto& alternative : m_atomData.group.alternatives) {
+            for (const Term& term : alternative) {
+                if (term.matchesAtLeastOneCharacter())
+                    return true;
+            }
         }
         return false;
     }
@@ -465,25 +484,22 @@ inline bool Term::isKnownToMatchAnyString() const
         return isUniversalTransition() && m_quantifier == AtomQuantifier::ZeroOrMore;
         break;
     case TermType::Group: {
-        // There are infinitely many ways to match anything with groups, we just handle simple cases
-        if (m_atomData.group.terms.size() != 1)
+        if (m_atomData.group.alternatives.size() != 1)
             return false;
 
-        const Term& firstTermInGroup = m_atomData.group.terms.first();
-        // -(.*) with any quantifier.
+        const auto& terms = m_atomData.group.alternatives.first();
+        if (terms.size() != 1)
+            return false;
+
+        const Term& firstTermInGroup = terms.first();
         if (firstTermInGroup.isKnownToMatchAnyString())
             return true;
 
         if (firstTermInGroup.isUniversalTransition()) {
-            // -(.)*, (.+)*, (.?)* etc.
             if (m_quantifier == AtomQuantifier::ZeroOrMore)
                 return true;
-
-            // -(.+)?.
             if (m_quantifier == AtomQuantifier::ZeroOrOne && firstTermInGroup.m_quantifier == AtomQuantifier::OneOrMore)
                 return true;
-
-            // -(.?)+.
             if (m_quantifier == AtomQuantifier::OneOrMore && firstTermInGroup.m_quantifier == AtomQuantifier::ZeroOrOne)
                 return true;
         }
@@ -506,7 +522,9 @@ inline bool Term::hasFixedLength() const
     case TermType::Group: {
         if (m_quantifier != AtomQuantifier::One)
             return false;
-        for (const Term& term : m_atomData.group.terms) {
+        if (m_atomData.group.alternatives.size() != 1)
+            return false;
+        for (const Term& term : m_atomData.group.alternatives.first()) {
             if (!term.hasFixedLength())
                 return false;
         }
@@ -564,7 +582,7 @@ inline bool Term::isUniversalTransition() const
         return (m_atomData.characterSet.inverted() && !m_atomData.characterSet.bitCount())
             || (!m_atomData.characterSet.inverted() && m_atomData.characterSet.bitCount() == 127 && !m_atomData.characterSet.get(0));
     case TermType::Group:
-        return m_atomData.group.terms.size() == 1 && m_atomData.group.terms.first().isUniversalTransition();
+        return m_atomData.group.alternatives.size() == 1 && m_atomData.group.alternatives.first().size() == 1 && m_atomData.group.alternatives.first().first().isUniversalTransition();
     }
     return false;
 }
@@ -614,25 +632,33 @@ inline void Term::generateSubgraphForAtom(NFA& nfa, ImmutableCharNFANodeBuilder&
         break;
     }
     case TermType::Group: {
-        if (m_atomData.group.terms.isEmpty()) {
-            // FIXME: any kind of empty term could be avoided in the parser. This case should turned into an assertion.
-            source.addEpsilonTransition(destination);
-            return;
+        auto generateSequence = [&](const Vector<Term>& terms, ImmutableCharNFANodeBuilder& seqSource, uint32_t seqDestination) {
+            if (terms.isEmpty()) {
+                seqSource.addEpsilonTransition(seqDestination);
+                return;
+            }
+            if (terms.size() == 1) {
+                terms.first().generateGraph(nfa, seqSource, seqDestination);
+                return;
+            }
+            ImmutableCharNFANodeBuilder lastTarget = terms.first().generateGraph(nfa, seqSource, ActionList());
+            for (unsigned i = 1; i < terms.size() - 1; ++i) {
+                ImmutableCharNFANodeBuilder newNode = terms[i].generateGraph(nfa, lastTarget, ActionList());
+                lastTarget = WTF::move(newNode);
+            }
+            terms.last().generateGraph(nfa, lastTarget, seqDestination);
+        };
+
+        if (m_atomData.group.alternatives.size() == 1) {
+            generateSequence(m_atomData.group.alternatives.first(), source, destination);
+            break;
         }
 
-        if (m_atomData.group.terms.size() == 1) {
-            m_atomData.group.terms.first().generateGraph(nfa, source, destination);
-            return;
+        for (const auto& alternative : m_atomData.group.alternatives) {
+            ImmutableCharNFANodeBuilder branchStart(nfa);
+            source.addEpsilonTransition(branchStart);
+            generateSequence(alternative, branchStart, destination);
         }
-
-        ImmutableCharNFANodeBuilder lastTarget = m_atomData.group.terms.first().generateGraph(nfa, source, ActionList());
-        for (unsigned i = 1; i < m_atomData.group.terms.size() - 1; ++i) {
-            const Term& currentTerm = m_atomData.group.terms[i];
-            ImmutableCharNFANodeBuilder newNode = currentTerm.generateGraph(nfa, lastTarget, ActionList());
-            lastTarget = WTF::move(newNode);
-        }
-        const Term& lastTerm = m_atomData.group.terms.last();
-        lastTerm.generateGraph(nfa, lastTarget, destination);
         break;
     }
     }
@@ -658,8 +684,10 @@ inline size_t Term::memoryUsed() const
 {
     size_t extraMemory = 0;
     if (m_termType == TermType::Group) {
-        for (const Term& term : m_atomData.group.terms)
-            extraMemory += term.memoryUsed();
+        for (const auto& alternative : m_atomData.group.alternatives) {
+            for (const Term& term : alternative)
+                extraMemory += term.memoryUsed();
+        }
     }
     return sizeof(Term) + extraMemory;
 }

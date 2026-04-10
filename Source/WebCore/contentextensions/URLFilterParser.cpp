@@ -327,7 +327,16 @@ public:
 
     void NODELETE disjunction(JSC::Yarr::CreateDisjunctionPurpose)
     {
-        fail(URLFilterParser::Disjunction);
+        if (hasError())
+            return;
+
+        if (m_openGroups.isEmpty()) {
+            fail(URLFilterParser::Disjunction);
+            return;
+        }
+
+        sinkFloatingTermIfNecessary();
+        m_openGroups.last().startNewAlternative();
     }
 
     NO_RETURN_DUE_TO_CRASH void resetForReparsing()
