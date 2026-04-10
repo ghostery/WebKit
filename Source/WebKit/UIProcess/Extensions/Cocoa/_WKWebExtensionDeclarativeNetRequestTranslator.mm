@@ -76,7 +76,7 @@ using namespace WebKit;
     }
 
     if (totalErrorCount > maximumNumberOfDeclarativeNetRequestErrorsToSurface)
-        [errorStrings addObject:@"Error limit hit. No longer omitting errors."];
+        [errorStrings addObject:[NSString stringWithFormat:@"Too many errors (%lu total). Only the first %lu are reported.", (unsigned long)totalErrorCount, maximumNumberOfDeclarativeNetRequestErrorsToSurface]];
 
     if (outErrorStrings)
         *outErrorStrings = [errorStrings copy];
