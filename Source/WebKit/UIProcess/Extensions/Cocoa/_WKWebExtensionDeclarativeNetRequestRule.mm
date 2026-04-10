@@ -1010,6 +1010,7 @@ static BOOL isArrayOfRequestMethodsValid(NSArray<NSString *> *requestMethods)
         @"image": @"image",
         @"main_frame": @"top-document",
         @"media": @"media",
+        @"object": @"other",
         @"other": @"other",
         @"ping": @"ping",
         @"script": @"script",
