@@ -44,8 +44,11 @@ target_include_directories(validate-dnr-rules PRIVATE
 set(INCLUDE_BRIDGE_DIR "${CMAKE_BINARY_DIR}/validate-dnr-includes")
 file(MAKE_DIRECTORY "${INCLUDE_BRIDGE_DIR}")
 file(CREATE_LINK "${CE_DIR}" "${INCLUDE_BRIDGE_DIR}/WebCore" SYMBOLIC)
-file(CREATE_LINK "${JSC_DIR}" "${INCLUDE_BRIDGE_DIR}/JavaScriptCore" SYMBOLIC)
-target_include_directories(validate-dnr-rules SYSTEM PRIVATE ${INCLUDE_BRIDGE_DIR})
+file(CREATE_LINK "${JSC_DIR}/yarr" "${INCLUDE_BRIDGE_DIR}/JavaScriptCore" SYMBOLIC)
+target_include_directories(validate-dnr-rules SYSTEM PRIVATE
+    ${INCLUDE_BRIDGE_DIR}
+    ${JSC_DIR}
+)
 
 target_link_libraries(validate-dnr-rules PRIVATE WTF)
 
