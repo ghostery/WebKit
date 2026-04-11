@@ -2,7 +2,7 @@ name: Build validate-dnr-rules
 
 on:
   push:
-    branches: [ghostery]
+    branches: [ghostery, ghostery/*]
   workflow_dispatch:
 
 jobs:
