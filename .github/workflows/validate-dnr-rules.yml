@@ -30,7 +30,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            cmake ninja-build pkg-config ruby unifdef libicu-dev
+            cmake ninja-build pkg-config ruby unifdef libicu-dev g++ perl python3
 
       - name: Cache CMake build
         uses: actions/cache@v4
@@ -45,6 +45,7 @@ jobs:
           cmake -B build -G Ninja \
             -DCMAKE_BUILD_TYPE=Release \
             -DPORT=JSCOnly \
+            -DUSE_SYSTEM_MALLOC=ON \
             .
 
       - name: Build
@@ -60,16 +61,16 @@ jobs:
             {"id":4,"priority":1,"action":{"type":"block"},"condition":{"regexFilter":"pixel\\b"}}
           ]
           RULES
-          ./build/validate-dnr-rules /tmp/test-rules.json
+          ./build/bin/validate-dnr-rules /tmp/test-rules.json
 
       - name: Binary info
         run: |
-          file build/validate-dnr-rules
-          du -h build/validate-dnr-rules
-          ldd build/validate-dnr-rules || true
+          file build/bin/validate-dnr-rules
+          du -h build/bin/validate-dnr-rules
+          ldd build/bin/validate-dnr-rules || true
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: validate-dnr-rules-${{ matrix.name }}
-          path: build/validate-dnr-rules
+          path: build/bin/validate-dnr-rules

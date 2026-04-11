@@ -25,7 +25,6 @@ set(TOOL_SOURCES
 add_executable(validate-dnr-rules ${TOOL_SOURCES} ${CE_SOURCES})
 
 target_compile_definitions(validate-dnr-rules PRIVATE
-    ENABLE_CONTENT_EXTENSIONS=1
     WEBCORE_EXPORT=
     WEBCORE_TESTSUPPORT_EXPORT=
     STATICALLY_LINKED_WITH_WTF=1
@@ -40,14 +39,35 @@ target_include_directories(validate-dnr-rules PRIVATE
     ${WTF_DERIVED_SOURCES_DIR}
 )
 
-# Create include bridge so <WebCore/...> and <JavaScriptCore/...> resolve
+# Create include bridge so <WebCore/...> and <JavaScriptCore/...> resolve.
+# WebKit headers use flat <JavaScriptCore/Yarr.h> but files live in subdirs.
 set(INCLUDE_BRIDGE_DIR "${CMAKE_BINARY_DIR}/validate-dnr-includes")
-file(MAKE_DIRECTORY "${INCLUDE_BRIDGE_DIR}")
-file(CREATE_LINK "${CE_DIR}" "${INCLUDE_BRIDGE_DIR}/WebCore" SYMBOLIC)
-file(CREATE_LINK "${JSC_DIR}/yarr" "${INCLUDE_BRIDGE_DIR}/JavaScriptCore" SYMBOLIC)
+file(MAKE_DIRECTORY "${INCLUDE_BRIDGE_DIR}/WebCore")
+file(MAKE_DIRECTORY "${INCLUDE_BRIDGE_DIR}/JavaScriptCore")
+
+file(GLOB CE_HEADERS "${CE_DIR}/*.h")
+foreach(H ${CE_HEADERS})
+    get_filename_component(HNAME ${H} NAME)
+    file(CREATE_LINK "${H}" "${INCLUDE_BRIDGE_DIR}/WebCore/${HNAME}" SYMBOLIC)
+endforeach()
+
+file(GLOB YARR_HEADERS "${JSC_DIR}/yarr/*.h")
+foreach(H ${YARR_HEADERS})
+    get_filename_component(HNAME ${H} NAME)
+    file(CREATE_LINK "${H}" "${INCLUDE_BRIDGE_DIR}/JavaScriptCore/${HNAME}" SYMBOLIC)
+endforeach()
+
+# Also link JSC headers from subdirectories that YARR needs
+file(GLOB_RECURSE ALL_JSC_HEADERS "${JSC_DIR}/*.h")
+foreach(H ${ALL_JSC_HEADERS})
+    get_filename_component(HNAME ${H} NAME)
+    if(NOT EXISTS "${INCLUDE_BRIDGE_DIR}/JavaScriptCore/${HNAME}")
+        file(CREATE_LINK "${H}" "${INCLUDE_BRIDGE_DIR}/JavaScriptCore/${HNAME}" SYMBOLIC)
+    endif()
+endforeach()
+
 target_include_directories(validate-dnr-rules SYSTEM PRIVATE
     ${INCLUDE_BRIDGE_DIR}
-    ${JSC_DIR}
 )
 
 target_link_libraries(validate-dnr-rules PRIVATE WTF)
