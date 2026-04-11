@@ -20,7 +20,7 @@ jobs:
           - os: ubuntu-24.04
             name: linux-x64
             deps: cmake ninja-build pkg-config ruby unifdef libicu-dev g++ perl python3
-          - os: macos-14
+          - os: macos-15
             name: macos-arm64
             deps: cmake ninja icu4c pkg-config
     runs-on: ${{ matrix.os }}
