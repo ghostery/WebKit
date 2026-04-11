@@ -67,6 +67,10 @@ jobs:
           RULES
           ./build/bin/validate-dnr-rules /tmp/test-rules.json
 
+      - name: Sign binary (macOS)
+        if: runner.os == 'macOS'
+        run: codesign --sign - --force build/bin/validate-dnr-rules
+
       - name: Prepare artifact
         run: |
           cp build/bin/validate-dnr-rules validate-dnr-rules-${{ matrix.name }}
