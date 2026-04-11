@@ -2,13 +2,7 @@ name: Build validate-dnr-rules
 
 on:
   push:
-    branches: [ghostery/*]
-    paths:
-      - 'ghostery/validate-dnr-rules/**'
-      - 'Source/WebCore/contentextensions/**'
-      - 'Source/WTF/**'
-      - 'CMakeLists.txt'
-      - '.github/workflows/validate-dnr-rules.yml'
+    branches: [ghostery]
   workflow_dispatch:
 
 jobs:
@@ -73,13 +67,51 @@ jobs:
           RULES
           ./build/bin/validate-dnr-rules /tmp/test-rules.json
 
-      - name: Binary info
+      - name: Prepare artifact
         run: |
-          file build/bin/validate-dnr-rules
-          du -h build/bin/validate-dnr-rules
+          cp build/bin/validate-dnr-rules validate-dnr-rules-${{ matrix.name }}
+          chmod +x validate-dnr-rules-${{ matrix.name }}
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: validate-dnr-rules-${{ matrix.name }}
-          path: build/bin/validate-dnr-rules
+          path: validate-dnr-rules-${{ matrix.name }}
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          TAG="validate-dnr-rules-$(date +%Y%m%d)-${GITHUB_SHA::8}"
+
+          # Delete existing release with same tag if re-running
+          gh release delete "$TAG" --yes 2>/dev/null || true
+
+          gh release create "$TAG" \
+            --title "validate-dnr-rules $(date +%Y-%m-%d)" \
+            --notes "Automated build from commit ${GITHUB_SHA::8}.
+
+          ## Downloads
+          - **Linux x64**: \`validate-dnr-rules-linux-x64\`
+          - **macOS arm64**: \`validate-dnr-rules-macos-arm64\` (Intel Macs: run via Rosetta)
+
+          ## Usage
+          \`\`\`
+          chmod +x validate-dnr-rules-*
+          ./validate-dnr-rules-linux-x64 path/to/dnr-rules.json
+          \`\`\`" \
+            artifacts/validate-dnr-rules-linux-x64/validate-dnr-rules-linux-x64 \
+            artifacts/validate-dnr-rules-macos-arm64/validate-dnr-rules-macos-arm64
