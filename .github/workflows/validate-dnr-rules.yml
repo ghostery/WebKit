@@ -19,6 +19,10 @@ jobs:
         include:
           - os: ubuntu-24.04
             name: linux-x64
+            deps: cmake ninja-build pkg-config ruby unifdef libicu-dev g++ perl python3
+          - os: macos-14
+            name: macos-arm64
+            deps: cmake ninja icu4c pkg-config
     runs-on: ${{ matrix.os }}
 
     steps:
@@ -26,11 +30,15 @@ jobs:
         with:
           fetch-depth: 1
 
-      - name: Install dependencies
+      - name: Install dependencies (Linux)
+        if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            cmake ninja-build pkg-config ruby unifdef libicu-dev g++ perl python3
+          sudo apt-get install -y --no-install-recommends ${{ matrix.deps }}
+
+      - name: Install dependencies (macOS)
+        if: runner.os == 'macOS'
+        run: brew install ${{ matrix.deps }}
 
       - name: Cache CMake build
         uses: actions/cache@v4
@@ -47,6 +55,8 @@ jobs:
             -DPORT=JSCOnly \
             -DUSE_SYSTEM_MALLOC=ON \
             .
+        env:
+          CMAKE_PREFIX_PATH: ${{ runner.os == 'macOS' && '/opt/homebrew/opt/icu4c' || '' }}
 
       - name: Build
         run: cmake --build build --target validate-dnr-rules
@@ -67,7 +77,6 @@ jobs:
         run: |
           file build/bin/validate-dnr-rules
           du -h build/bin/validate-dnr-rules
-          ldd build/bin/validate-dnr-rules || true
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
