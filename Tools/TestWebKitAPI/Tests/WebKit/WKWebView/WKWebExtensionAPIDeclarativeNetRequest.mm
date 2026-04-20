@@ -4398,6 +4398,62 @@ TEST(WKWebExtensionAPIDeclarativeNetRequest, GhosteryLargeRulesetCompilation)
     [[WKContentRuleListStore defaultStore] removeContentRuleListForIdentifier:@"ghostery-ads-test" completionHandler:^(NSError *error) { }];
 }
 
+// MARK: - Bug: enabling multiple rulesets silently fails when merged total exceeds
+// ContentExtensionParser's hardcoded 150,000 rule limit (ContentExtensionParser.cpp:334).
+// WebKit merges all enabled rulesets from an extension into a single content blocker
+// before compilation, so toggling additional rulesets on can push the combined total
+// past the limit, causing compileContentRuleListFile to fail with JSONTooManyRules.
+// The error propagates only as RELEASE_LOG_ERROR; the extension sees nothing.
+
+TEST(WKWebExtensionAPIDeclarativeNetRequest, GhosteryCombinedRulesetsExceed150kLimit)
+{
+    NSData *ads = ghosteryRulesetData(@"dnr-ads.json");
+    NSData *tracking = ghosteryRulesetData(@"dnr-tracking.json");
+    NSData *annoyances = ghosteryRulesetData(@"dnr-annoyances.json");
+    EXPECT_NOT_NULL(ads);
+    EXPECT_NOT_NULL(tracking);
+    EXPECT_NOT_NULL(annoyances);
+    if (!ads || !tracking || !annoyances)
+        return;
+
+    NSDictionary<NSString *, NSData *> *jsonDataDict = @{
+        @"ads": ads,
+        @"tracking": tracking,
+        @"annoyances": annoyances,
+    };
+
+    NSArray<NSString *> *jsonErrors = nil;
+    auto *allJSONObjects = [_WKWebExtensionDeclarativeNetRequestTranslator jsonObjectsFromData:jsonDataDict errorStrings:&jsonErrors];
+
+    NSArray<NSString *> *translationErrors = nil;
+    auto *convertedRules = [_WKWebExtensionDeclarativeNetRequestTranslator translateRules:allJSONObjects errorStrings:&translationErrors];
+
+    NSLog(@"Ghostery combined: %lu translated rules (limit is 150000)", (unsigned long)convertedRules.count);
+
+    NSData *jsonData = [NSJSONSerialization dataWithJSONObject:convertedRules options:0 error:nil];
+    NSString *jsonString = [[NSString alloc] initWithData:jsonData encoding:NSUTF8StringEncoding];
+
+    __block bool done = false;
+    __block NSError *compilationError = nil;
+
+    [[WKContentRuleListStore defaultStore] compileContentRuleListForIdentifier:@"ghostery-combined-test" encodedContentRuleList:jsonString completionHandler:^(WKContentRuleList *ruleList, NSError *error) {
+        compilationError = error;
+        done = true;
+    }];
+
+    TestWebKitAPI::Util::run(&done);
+
+    if (convertedRules.count > 150000) {
+        NSLog(@"Ghostery combined: compilation failed as expected: %@", compilationError);
+        EXPECT_NOT_NULL(compilationError);
+    } else {
+        NSLog(@"Ghostery combined: under 150k limit — compilation should succeed");
+        EXPECT_NULL(compilationError);
+    }
+
+    [[WKContentRuleListStore defaultStore] removeContentRuleListForIdentifier:@"ghostery-combined-test" completionHandler:^(NSError *error) { }];
+}
+
 } // namespace TestWebKitAPI
 
 #endif // ENABLE(WK_WEB_EXTENSIONS)
