@@ -1,0 +1,133 @@
+name: Build validate-dnr-rules
+
+on:
+  push:
+    branches: [ghostery]
+  pull_request:
+    branches: [ghostery]
+  workflow_dispatch:
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            name: linux-x64
+            deps: cmake ninja-build pkg-config ruby unifdef libicu-dev g++ perl python3
+          - os: macos-15
+            name: macos-arm64
+            deps: cmake ninja icu4c pkg-config
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Install dependencies (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends ${{ matrix.deps }}
+
+      - name: Install dependencies (macOS)
+        if: runner.os == 'macOS'
+        run: brew install ${{ matrix.deps }}
+
+      - name: Cache CMake build
+        uses: actions/cache@v4
+        with:
+          path: build
+          key: cmake-${{ matrix.name }}-${{ hashFiles('Source/WTF/**', 'Source/WebCore/contentextensions/**', 'ghostery/validate-dnr-rules/**') }}
+          restore-keys: |
+            cmake-${{ matrix.name }}-
+
+      - name: Configure
+        run: |
+          cmake -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DPORT=JSCOnly \
+            -DUSE_SYSTEM_MALLOC=ON \
+            .
+        env:
+          CMAKE_PREFIX_PATH: ${{ runner.os == 'macOS' && '/opt/homebrew/opt/icu4c' || '' }}
+
+      - name: Build
+        run: cmake --build build --target validate-dnr-rules
+
+      - name: Test
+        run: |
+          cat > /tmp/valid-rules.json << 'RULES'
+          [
+            {"id":1,"priority":1,"action":{"type":"block"},"condition":{"regexFilter":"ads\\.example\\.com"}},
+            {"id":2,"priority":1,"action":{"type":"block"},"condition":{"urlFilter":"||tracker.example.com^"}}
+          ]
+          RULES
+          ./build/bin/validate-dnr-rules /tmp/valid-rules.json
+
+          cat > /tmp/invalid-rules.json << 'RULES'
+          [
+            {"id":1,"priority":1,"action":{"type":"block"},"condition":{"regexFilter":"ad[0-9]{2}\\.js"}},
+            {"id":2,"priority":1,"action":{"type":"block"},"condition":{"regexFilter":"(?:ads|tracking)\\.com"}}
+          ]
+          RULES
+          if ./build/bin/validate-dnr-rules /tmp/invalid-rules.json; then
+            echo "Expected validator to exit non-zero for invalid rules"
+            exit 1
+          fi
+
+      - name: Sign binary (macOS)
+        if: runner.os == 'macOS'
+        run: codesign --sign - --force build/bin/validate-dnr-rules
+
+      - name: Prepare artifact
+        run: |
+          cp build/bin/validate-dnr-rules validate-dnr-rules-${{ matrix.name }}
+          chmod +x validate-dnr-rules-${{ matrix.name }}
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: validate-dnr-rules-${{ matrix.name }}
+          path: validate-dnr-rules-${{ matrix.name }}
+
+  release:
+    needs: build
+    if: github.event_name == 'push' && github.ref == 'refs/heads/ghostery'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          TAG="validate-dnr-rules-$(date +%Y%m%d)-${GITHUB_SHA::8}"
+
+          # Delete existing release with same tag if re-running
+          gh release delete "$TAG" --yes 2>/dev/null || true
+
+          gh release create "$TAG" \
+            --title "validate-dnr-rules $(date +%Y-%m-%d)" \
+            --notes "Automated build from commit ${GITHUB_SHA::8}.
+
+          ## Downloads
+          - **Linux x64**: \`validate-dnr-rules-linux-x64\`
+          - **macOS arm64**: \`validate-dnr-rules-macos-arm64\` (Intel Macs: run via Rosetta)
+
+          ## Usage
+          \`\`\`
+          chmod +x validate-dnr-rules-*
+          ./validate-dnr-rules-linux-x64 path/to/dnr-rules.json
+          \`\`\`" \
+            artifacts/validate-dnr-rules-linux-x64/validate-dnr-rules-linux-x64 \
+            artifacts/validate-dnr-rules-macos-arm64/validate-dnr-rules-macos-arm64
