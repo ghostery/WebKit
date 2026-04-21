@@ -33,17 +33,17 @@ namespace JSC::Yarr {
 
 bool characterClassMayContainStrings(BuiltInCharacterClassID)
 {
-    return false;
+    std::abort();
 }
 
 std::optional<BuiltInCharacterClassID> unicodeMatchProperty(WTF::String, CompileMode)
 {
-    return std::nullopt;
+    std::abort();
 }
 
 std::optional<BuiltInCharacterClassID> unicodeMatchPropertyValue(WTF::String, WTF::String)
 {
-    return std::nullopt;
+    std::abort();
 }
 
 } // namespace JSC::Yarr
