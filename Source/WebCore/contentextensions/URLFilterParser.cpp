@@ -51,7 +51,13 @@ public:
         if (hasError())
             return;
 
-        sinkFloatingTermIfNecessary();
+        if (m_hasTopLevelDisjunction) {
+            sinkFloatingTermIfNecessary();
+            m_floatingTerm = m_openGroups.takeLast();
+            sinkFloatingTermIfNecessary();
+            m_hasTopLevelDisjunction = false;
+        } else
+            sinkFloatingTermIfNecessary();
 
         simplifySunkTerms();
 
@@ -101,10 +107,41 @@ public:
         sinkFloatingTermIfNecessary();
         ASSERT(!m_floatingTerm.isValid());
 
-        if (builtInCharacterClassID == JSC::Yarr::BuiltInCharacterClassID::DotClassID && !inverted)
+        if (builtInCharacterClassID == JSC::Yarr::BuiltInCharacterClassID::DotClassID && !inverted) {
             m_floatingTerm = Term(Term::UniversalTransition);
-        else
-            fail(URLFilterParser::UnsupportedCharacterClass);
+            return;
+        }
+
+        if (builtInCharacterClassID == JSC::Yarr::BuiltInCharacterClassID::DigitClassID) {
+            m_floatingTerm = Term(Term::CharacterSetTerm, inverted);
+            for (unsigned i = '0'; i <= '9'; ++i)
+                m_floatingTerm.addCharacter(static_cast<char16_t>(i), true);
+            return;
+        }
+
+        if (builtInCharacterClassID == JSC::Yarr::BuiltInCharacterClassID::WordClassID) {
+            m_floatingTerm = Term(Term::CharacterSetTerm, inverted);
+            for (unsigned i = '0'; i <= '9'; ++i)
+                m_floatingTerm.addCharacter(static_cast<char16_t>(i), true);
+            for (unsigned i = 'a'; i <= 'z'; ++i)
+                m_floatingTerm.addCharacter(static_cast<char16_t>(i), true);
+            for (unsigned i = 'A'; i <= 'Z'; ++i)
+                m_floatingTerm.addCharacter(static_cast<char16_t>(i), true);
+            m_floatingTerm.addCharacter('_', true);
+            return;
+        }
+
+        if (builtInCharacterClassID == JSC::Yarr::BuiltInCharacterClassID::SpaceClassID) {
+            m_floatingTerm = Term(Term::CharacterSetTerm, inverted);
+            m_floatingTerm.addCharacter(' ', true);
+            m_floatingTerm.addCharacter('\t', true);
+            m_floatingTerm.addCharacter('\n', true);
+            m_floatingTerm.addCharacter('\r', true);
+            m_floatingTerm.addCharacter('\f', true);
+            return;
+        }
+
+        fail(URLFilterParser::UnsupportedCharacterClass);
     }
 
     void NODELETE quantifyAtom(unsigned minimum, unsigned maximum, bool)
@@ -114,14 +151,44 @@ public:
 
         ASSERT(m_floatingTerm.isValid());
 
-        if (!minimum && maximum == 1)
+        if (!minimum && !maximum) {
+            // {0} means match zero times — discard the term.
+            m_floatingTerm = Term();
+        } else if (!minimum && maximum == 1)
             m_floatingTerm.quantify(AtomQuantifier::ZeroOrOne);
         else if (!minimum && maximum == JSC::Yarr::quantifyInfinite)
             m_floatingTerm.quantify(AtomQuantifier::ZeroOrMore);
         else if (minimum == 1 && maximum == JSC::Yarr::quantifyInfinite)
             m_floatingTerm.quantify(AtomQuantifier::OneOrMore);
+        else if (minimum > 0 || maximum > 1)
+            expandQuantifier(minimum, maximum);
         else
             fail(URLFilterParser::InvalidQuantifier);
+    }
+
+    void expandQuantifier(unsigned minimum, unsigned maximum)
+    {
+        Term baseTerm = m_floatingTerm;
+        m_floatingTerm = Term();
+
+        Term group(Term::GroupTerm);
+
+        for (unsigned i = 0; i < minimum; ++i)
+            group.extendGroupSubpattern(baseTerm);
+
+        if (maximum == JSC::Yarr::quantifyInfinite) {
+            Term oneOrMore(baseTerm);
+            oneOrMore.quantify(AtomQuantifier::OneOrMore);
+            group.extendGroupSubpattern(oneOrMore);
+        } else {
+            for (unsigned i = minimum; i < maximum; ++i) {
+                Term optional(baseTerm);
+                optional.quantify(AtomQuantifier::ZeroOrOne);
+                group.extendGroupSubpattern(optional);
+            }
+        }
+
+        m_floatingTerm = group;
     }
 
     void NODELETE atomBackReference(unsigned)
@@ -163,9 +230,24 @@ public:
         m_floatingTerm = Term(Term::EndOfLineAssertionTerm);
     }
 
-    void NODELETE assertionWordBoundary(bool)
+    void assertionWordBoundary(bool inverted)
     {
-        fail(URLFilterParser::WordBoundary);
+        if (hasError())
+            return;
+
+        sinkFloatingTermIfNecessary();
+        ASSERT(!m_floatingTerm.isValid());
+
+        // Approximate \b by matching a non-word character.
+        // \B (inverted) matches a word character.
+        m_floatingTerm = Term(Term::CharacterSetTerm, !inverted);
+        for (unsigned i = '0'; i <= '9'; ++i)
+            m_floatingTerm.addCharacter(static_cast<char16_t>(i), true);
+        for (unsigned i = 'a'; i <= 'z'; ++i)
+            m_floatingTerm.addCharacter(static_cast<char16_t>(i), true);
+        for (unsigned i = 'A'; i <= 'Z'; ++i)
+            m_floatingTerm.addCharacter(static_cast<char16_t>(i), true);
+        m_floatingTerm.addCharacter('_', true);
     }
 
     void atomCharacterClassBegin(bool inverted = false)
@@ -231,9 +313,45 @@ public:
         // Nothing to do here. The character set atom may have a quantifier, we sink the atom lazily.
     }
 
-    void NODELETE atomCharacterClassBuiltIn(JSC::Yarr::BuiltInCharacterClassID, bool)
+    void atomCharacterClassBuiltIn(JSC::Yarr::BuiltInCharacterClassID builtInCharacterClassID, bool inverted)
     {
-        fail(URLFilterParser::AtomCharacter);
+        if (hasError())
+            return;
+
+        auto addChars = [&](std::initializer_list<std::pair<char16_t, char16_t>> ranges) {
+            if (!inverted) {
+                for (auto [lo, hi] : ranges) {
+                    for (unsigned i = lo; i <= hi; ++i)
+                        m_floatingTerm.addCharacter(static_cast<char16_t>(i), true);
+                }
+            } else {
+                // Build a set of characters in the class, then add everything NOT in it.
+                std::array<bool, 128> inClass { };
+                for (auto [lo, hi] : ranges) {
+                    for (unsigned i = lo; i <= hi; ++i)
+                        inClass[i] = true;
+                }
+                for (unsigned i = 1; i < 128; ++i) {
+                    if (!inClass[i])
+                        m_floatingTerm.addCharacter(static_cast<char16_t>(i), true);
+                }
+            }
+        };
+
+        switch (builtInCharacterClassID) {
+        case JSC::Yarr::BuiltInCharacterClassID::DigitClassID:
+            addChars({ {'0', '9'} });
+            break;
+        case JSC::Yarr::BuiltInCharacterClassID::WordClassID:
+            addChars({ {'0', '9'}, {'a', 'z'}, {'A', 'Z'}, {'_', '_'} });
+            break;
+        case JSC::Yarr::BuiltInCharacterClassID::SpaceClassID:
+            addChars({ {' ', ' '}, {'\t', '\t'}, {'\n', '\n'}, {'\r', '\r'}, {'\f', '\f'} });
+            break;
+        default:
+            fail(URLFilterParser::AtomCharacter);
+            break;
+        }
     }
 
     void atomParenthesesSubpatternBegin(bool = true, std::optional<String> = std::nullopt)
@@ -267,9 +385,25 @@ public:
         m_floatingTerm = m_openGroups.takeLast();
     }
 
-    void NODELETE disjunction(JSC::Yarr::CreateDisjunctionPurpose)
+    void disjunction(JSC::Yarr::CreateDisjunctionPurpose)
     {
-        fail(URLFilterParser::Disjunction);
+        if (hasError())
+            return;
+
+        if (m_openGroups.isEmpty()) {
+            sinkFloatingTermIfNecessary();
+
+            Term implicitGroup(Term::GroupTerm);
+            for (const auto& term : m_sunkTerms)
+                implicitGroup.extendGroupSubpattern(term);
+            m_sunkTerms.clear();
+
+            m_openGroups.append(WTF::move(implicitGroup));
+            m_hasTopLevelDisjunction = true;
+        } else
+            sinkFloatingTermIfNecessary();
+
+        m_openGroups.last().startNewAlternative();
     }
 
     NO_RETURN_DUE_TO_CRASH void resetForReparsing()
@@ -305,7 +439,7 @@ private:
             return;
         }
 
-        if (m_floatingTerm.isEndOfLineAssertion())
+        if (m_floatingTerm.isEndOfLineAssertion() && m_openGroups.isEmpty())
             m_hasProcessedEndOfLineAssertion = true;
 
         if (!m_openGroups.isEmpty()) {
@@ -369,6 +503,7 @@ private:
     Term m_floatingTerm;
     bool m_hasBeginningOfLineAssertion { false };
     bool m_hasProcessedEndOfLineAssertion { false };
+    bool m_hasTopLevelDisjunction { false };
 
     URLFilterParser::ParseStatus m_parseStatus;
 };
